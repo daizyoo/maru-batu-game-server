@@ -1,36 +1,94 @@
+mod game;
 mod room;
 
-use std::{io::Result, sync::Mutex};
+use std::{
+    io::Result,
+    sync::{mpsc::Sender, Mutex},
+};
 
-use actix_web::{web::scope, App, HttpServer};
+use actix_web::{
+    web::{post, scope, Data},
+    App, HttpResponse, HttpServer,
+};
 
-use room::Room;
-use serde::{Deserialize, Serialize};
+use room::{Room, RoomInfo};
+use serde::Serialize;
 
 const ADDRESS: &str = "127.0.0.1:8080";
 
 struct RoomList(Mutex<Vec<Room>>);
 
-#[derive(Serialize, Deserialize)]
-struct User {
-    name: String,
+struct WaitRoomList(Mutex<Vec<WaitRoom>>);
+
+struct WaitRoom {
+    sender: Sender<Room>,
+    room_info: RoomInfo,
 }
 
-#[derive(Serialize)]
+search!(WaitRoom { String } => fn value(&self) -> Self::Value {
+    self.room_info.name()
+});
+
+#[derive(Debug, Serialize)]
 struct Response<T> {
     data: Option<T>,
 }
 
-#[actix_web::main]
+#[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<()> {
-    HttpServer::new(|| {
+    tracing_subscriber::fmt().init();
+
+    let room_list = Data::new(RoomList(Mutex::new(Vec::new())));
+    let wait_room_list = Data::new(WaitRoomList(Mutex::new(Vec::new())));
+
+    HttpServer::new(move || {
         App::new()
-            .app_data(RoomList(Mutex::new(Vec::new())))
-            .service(scope("/room"))
+            .service(
+                scope("/room")
+                    .route("/create", post().to(room::create))
+                    .route("/delete", post().to(room::delete))
+                    .route("/enter", post().to(room::enter))
+                    .route("/search", post().to(room::search)),
+            )
+            .route("/game", post().to(game::sync))
+            .app_data(room_list.clone())
+            .app_data(wait_room_list.clone())
     })
     .bind(ADDRESS)?
     .run()
     .await?;
 
     Ok(())
+}
+
+pub trait Search {
+    type Value: PartialEq;
+
+    fn value(&self) -> Self::Value;
+}
+
+pub fn search_vec<'a, T: Search>(vec: &'a Vec<T>, v: T::Value) -> Option<&'a T> {
+    vec.iter().find(|&x| x.value() == v)
+}
+
+#[macro_export]
+macro_rules! search {
+    ($s:ident { $t:ty } => $f:item) => {
+        impl crate::Search for $s {
+            type Value = $t;
+            $f
+        }
+    };
+}
+
+impl<T: Serialize> Response<T> {
+    fn new(data: Option<T>) -> Response<T> {
+        Response { data }
+    }
+    fn ok(data: T) -> HttpResponse {
+        HttpResponse::Ok().json(Response::new(Some(data)))
+    }
+    fn error() -> HttpResponse {
+        HttpResponse::Ok().json(Response::<T>::new(None))
+    }
 }
