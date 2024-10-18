@@ -81,6 +81,8 @@ pub async fn enter(
             return Response::<Room>::error();
         }
 
+        info!("{:#?}", room);
+
         return Response::ok(room);
     }
 

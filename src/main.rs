@@ -2,6 +2,7 @@ mod game;
 mod room;
 
 use std::{
+    collections::HashMap,
     io::Result,
     sync::{mpsc::Sender, Mutex},
 };
@@ -11,6 +12,7 @@ use actix_web::{
     App, HttpResponse, HttpServer,
 };
 
+use game::Game;
 use room::{Room, RoomInfo};
 use serde::Serialize;
 
@@ -19,6 +21,12 @@ const ADDRESS: &str = "127.0.0.1:8080";
 struct RoomList(Mutex<Vec<Room>>);
 
 struct WaitRoomList(Mutex<Vec<WaitRoom>>);
+
+struct WaitGameList(Mutex<HashMap<String, GameWaitRoom>>);
+
+struct GameWaitRoom {
+    sender: Sender<Game>,
+}
 
 struct WaitRoom {
     sender: Sender<Room>,
@@ -34,12 +42,13 @@ struct Response<T> {
     data: Option<T>,
 }
 
-#[tokio::main(flavor = "current_thread")]
+#[tokio::main(flavor = "multi_thread", worker_threads = 8)]
 async fn main() -> Result<()> {
     tracing_subscriber::fmt().init();
 
     let room_list = Data::new(RoomList(Mutex::new(Vec::new())));
     let wait_room_list = Data::new(WaitRoomList(Mutex::new(Vec::new())));
+    let wait_game_list = Data::new(WaitGameList(Mutex::new(HashMap::new())));
 
     HttpServer::new(move || {
         App::new()
@@ -50,9 +59,14 @@ async fn main() -> Result<()> {
                     .route("/enter", post().to(room::enter))
                     .route("/search", post().to(room::search)),
             )
-            .route("/game", post().to(game::sync))
+            .service(
+                scope("/game")
+                    .route("/sync", post().to(game::sync))
+                    .route("/wait", post().to(game::wait)),
+            )
             .app_data(room_list.clone())
             .app_data(wait_room_list.clone())
+            .app_data(wait_game_list.clone())
     })
     .bind(ADDRESS)?
     .run()
